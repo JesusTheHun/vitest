@@ -1,4 +1,4 @@
-export { startTests, updateTask } from './run'
+export { startTests, updateTask, triggerTestExecution, triggerSuiteExecution } from './run'
 export { test, it, describe, suite, getCurrentSuite, createTaskCollector } from './suite'
 export { beforeAll, beforeEach, afterAll, afterEach, onTestFailed, onTestFinished } from './hooks'
 export { setFn, getFn, getHooks, setHooks } from './map'

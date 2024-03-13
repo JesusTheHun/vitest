@@ -114,6 +114,13 @@ async function callCleanupHooks(cleanups: HookCleanupCallback[]) {
   }))
 }
 
+export async function triggerTestExecution(test: Test | Custom) {
+  const fn = getFn(test)
+  if (!fn)
+    throw new Error('Test function is not found. Did you add it using `setFn`?')
+  await fn()
+}
+
 export async function runTest(test: Test | Custom, runner: VitestRunner) {
   await runner.onBeforeRunTask?.(test)
 
@@ -148,15 +155,12 @@ export async function runTest(test: Test | Custom, runner: VitestRunner) {
 
         beforeEachCleanups = await callSuiteHook(test.suite, test, 'beforeEach', runner, [test.context, test.suite])
 
-        if (runner.runTask) {
+        if (runner.runTask)
           await runner.runTask(test)
-        }
-        else {
-          const fn = getFn(test)
-          if (!fn)
-            throw new Error('Test function is not found. Did you add it using `setFn`?')
-          await fn()
-        }
+
+        else
+          await triggerTestExecution(test)
+
         // some async expect will be added to this array, in case user forget to await theme
         if (test.promises) {
           const result = await Promise.allSettled(test.promises)
@@ -275,6 +279,27 @@ function markTasksAsSkipped(suite: Suite, runner: VitestRunner) {
   })
 }
 
+export async function triggerSuiteExecution(suite: Suite, runner: VitestRunner) {
+  for (let tasksGroup of partitionSuiteChildren(suite)) {
+    if (tasksGroup[0].concurrent === true) {
+      const mutex = limit(runner.config.maxConcurrency)
+      await Promise.all(tasksGroup.map(c => mutex(() => runSuiteChild(c, runner))))
+    }
+    else {
+      const { sequence } = runner.config
+      if (sequence.shuffle || suite.shuffle) {
+        // run describe block independently from tests
+        const suites = tasksGroup.filter(group => group.type === 'suite')
+        const tests = tasksGroup.filter(group => group.type === 'test')
+        const groups = shuffle([suites, tests], sequence.seed)
+        tasksGroup = groups.flatMap(group => shuffle(group, sequence.seed))
+      }
+      for (const c of tasksGroup)
+        await runSuiteChild(c, runner)
+    }
+  }
+}
+
 export async function runSuite(suite: Suite, runner: VitestRunner) {
   await runner.onBeforeRunSuite?.(suite)
 
@@ -305,29 +330,11 @@ export async function runSuite(suite: Suite, runner: VitestRunner) {
     try {
       beforeAllCleanups = await callSuiteHook(suite, suite, 'beforeAll', runner, [suite])
 
-      if (runner.runSuite) {
+      if (runner.runSuite)
         await runner.runSuite(suite)
-      }
-      else {
-        for (let tasksGroup of partitionSuiteChildren(suite)) {
-          if (tasksGroup[0].concurrent === true) {
-            const mutex = limit(runner.config.maxConcurrency)
-            await Promise.all(tasksGroup.map(c => mutex(() => runSuiteChild(c, runner))))
-          }
-          else {
-            const { sequence } = runner.config
-            if (sequence.shuffle || suite.shuffle) {
-              // run describe block independently from tests
-              const suites = tasksGroup.filter(group => group.type === 'suite')
-              const tests = tasksGroup.filter(group => group.type === 'test')
-              const groups = shuffle([suites, tests], sequence.seed)
-              tasksGroup = groups.flatMap(group => shuffle(group, sequence.seed))
-            }
-            for (const c of tasksGroup)
-              await runSuiteChild(c, runner)
-          }
-        }
-      }
+
+      else
+        await triggerSuiteExecution(suite, runner)
     }
     catch (e) {
       failTask(suite.result, e, runner.config.diffOptions)
